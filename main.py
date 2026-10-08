@@ -142,7 +142,6 @@ Return this JSON format:
             response_data = r.json()
             if "content" in response_data and len(response_data["content"]) > 0:
                 text = response_data["content"][0].get("text", "").strip()
-                print(f"Claude response: {text}")
                 if text:
                     try:
                         if text.startswith("```"):
@@ -159,11 +158,11 @@ Return this JSON format:
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-        print(f"Sending to {TG_ID}")
-        r = requests.post(url, json={"chat_id": TG_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        print(f"Telegram response: {r.status_code}")
-        if r.status_code != 200:
-            print(f"Telegram error response: {r.text}")
+        r = requests.post(url, json={"chat_id": TG_ID, "text": msg}, timeout=10)
+        if r.status_code == 200:
+            print("Telegram sent")
+        else:
+            print(f"Telegram error: {r.status_code} - {r.text}")
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -178,7 +177,7 @@ while True:
                 print(f"Processing: {e['subject']}")
                 analysis = analyze_email(e['from'], e['subject'], e['body'])
                 
-                msg = f"""📧 NEW EMAIL
+                msg = f"""NEW EMAIL
 From: {e['from']}
 Subject: {e['subject']}
 
