@@ -136,14 +136,13 @@ Calendar: {calendar_status}"""
     try:
         r = requests.post("https://api.anthropic.com/v1/messages", 
             headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}, 
-            json={"model": "claude-haiku-5-5", "max_tokens": 150, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-haiku-5-5", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
             timeout=30)
         
         if r.status_code == 200:
             response_data = r.json()
             if "content" in response_data and len(response_data["content"]) > 0:
                 text = response_data["content"][0].get("text", "").strip()
-                print(f"RAW: {text[:100]}")
                 
                 if text.startswith("```"):
                     text = text.split("```")[1].lstrip("json").strip()
@@ -151,7 +150,6 @@ Calendar: {calendar_status}"""
                 try:
                     return json.loads(text)
                 except:
-                    print(f"PARSE FAILED: {text[:200]}")
                     return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A"}
         
         return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A"}
