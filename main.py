@@ -49,7 +49,7 @@ def check_calendar_availability():
             start_time = next_event['start'].get('dateTime', next_event['start'].get('date'))
             return f"Next meeting: {next_event['summary']} at {start_time}"
         else:
-            return "No meetings scheduled for next 24 hours"
+            return "No meetings scheduled"
     except Exception as e:
         print(f"Calendar check error: {e}")
         return "Calendar unavailable"
@@ -72,7 +72,6 @@ def mark_email_unread(email_id):
         m.store(email_id, '-FLAGS', '\\Seen')
         m.close()
         m.logout()
-        print(f"Marked email {email_id} as unread")
     except Exception as e:
         print(f"Error marking unread: {e}")
 
@@ -124,42 +123,47 @@ def analyze_email(fr, subj, body):
     except:
         calendar_status = "Calendar unavailable"
     
-    prompt = f"""Respond ONLY with this JSON format, no other text:
-{{"summary": "1-2 sentence summary", "category": "Urgent/Needs Reply/FYI/Follow-up/Course/Admin", "draft_reply": "2-3 sentence reply or 'No reply needed'"}}
-
-Email from: {fr}
+    prompt = f"""Analyze this email and return ONLY JSON:
+From: {fr}
 Subject: {subj}
 Body: {body}
-Calendar: {calendar_status}"""
+Calendar: {calendar_status}
+
+Return this JSON format:
+{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "2-3 sentence reply or say No reply needed"}}"""
     
     try:
         r = requests.post("https://api.anthropic.com/v1/messages", 
             headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}, 
-            json={"model": "claude-haiku-5-5", "max_tokens": 200, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-haiku-5-5", "max_tokens": 250, "messages": [{"role": "user", "content": prompt}]},
             timeout=30)
         
         if r.status_code == 200:
-            try:
-                response_data = r.json()
-                if "content" in response_data and len(response_data["content"]) > 0:
-                    text = response_data["content"][0].get("text", "").strip()
-                    if text:
+            response_data = r.json()
+            if "content" in response_data and len(response_data["content"]) > 0:
+                text = response_data["content"][0].get("text", "").strip()
+                print(f"Claude response: {text}")
+                if text:
+                    try:
                         if text.startswith("```"):
                             text = text.split("```")[1].lstrip("json").strip()
                         return json.loads(text)
-            except json.JSONDecodeError:
-                pass
+                    except Exception as parse_error:
+                        print(f"JSON parse error: {parse_error}")
         
-        return {"summary": "Could not analyze", "category": "Needs Reply", "draft_reply": "Please review manually"}
+        return {"summary": "Could not analyze", "category": "Needs Reply", "draft_reply": "Please review"}
     except Exception as e:
         print(f"Claude error: {e}")
-        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "Error analyzing"}
+        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "Error"}
 
 def send_telegram(msg):
     try:
-        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            json={"chat_id": TG_ID, "text": msg, "parse_mode": "HTML"})
-        print("Telegram sent")
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        print(f"Sending to {TG_ID}")
+        r = requests.post(url, json={"chat_id": TG_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        print(f"Telegram response: {r.status_code}")
+        if r.status_code != 200:
+            print(f"Telegram error response: {r.text}")
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -174,16 +178,16 @@ while True:
                 print(f"Processing: {e['subject']}")
                 analysis = analyze_email(e['from'], e['subject'], e['body'])
                 
-                msg = f"""<b>📧 NEW EMAIL</b>
-<b>From:</b> {e['from']}
-<b>Subject:</b> {e['subject']}
+                msg = f"""📧 NEW EMAIL
+From: {e['from']}
+Subject: {e['subject']}
 
-<b>📋 Summary:</b> {analysis['summary']}
+Summary: {analysis.get('summary', 'N/A')}
 
-<b>🏷️ Category:</b> {analysis['category']}
+Category: {analysis.get('category', 'N/A')}
 
-<b>✍️ Draft Reply:</b>
-{analysis['draft_reply']}"""
+Draft Reply:
+{analysis.get('draft_reply', 'N/A')}"""
                 
                 send_telegram(msg)
                 save_processed_uid(e['uid'])
