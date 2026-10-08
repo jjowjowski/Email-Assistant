@@ -123,37 +123,41 @@ def analyze_email(fr, subj, body):
     except:
         calendar_status = "Calendar unavailable"
     
-    prompt = f"""Analyze this email and return ONLY JSON:
+    prompt = f"""Return valid JSON only. No other text.
+
+{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "Brief reply or No reply needed"}}
+
+Analyze:
 From: {fr}
 Subject: {subj}
 Body: {body}
-Calendar: {calendar_status}
-
-Return this JSON format:
-{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "2-3 sentence reply or say No reply needed"}}"""
+Calendar: {calendar_status}"""
     
     try:
         r = requests.post("https://api.anthropic.com/v1/messages", 
             headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}, 
-            json={"model": "claude-haiku-5-5", "max_tokens": 250, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-haiku-5-5", "max_tokens": 150, "messages": [{"role": "user", "content": prompt}]},
             timeout=30)
         
         if r.status_code == 200:
             response_data = r.json()
             if "content" in response_data and len(response_data["content"]) > 0:
                 text = response_data["content"][0].get("text", "").strip()
-                if text:
-                    try:
-                        if text.startswith("```"):
-                            text = text.split("```")[1].lstrip("json").strip()
-                        return json.loads(text)
-                    except Exception as parse_error:
-                        print(f"JSON parse error: {parse_error}")
+                print(f"RAW: {text[:100]}")
+                
+                if text.startswith("```"):
+                    text = text.split("```")[1].lstrip("json").strip()
+                
+                try:
+                    return json.loads(text)
+                except:
+                    print(f"PARSE FAILED: {text[:200]}")
+                    return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A"}
         
-        return {"summary": "Could not analyze", "category": "Needs Reply", "draft_reply": "Please review"}
+        return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A"}
     except Exception as e:
-        print(f"Claude error: {e}")
-        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "Error"}
+        print(f"ERROR: {e}")
+        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "N/A"}
 
 def send_telegram(msg):
     try:
@@ -162,7 +166,7 @@ def send_telegram(msg):
         if r.status_code == 200:
             print("Telegram sent")
         else:
-            print(f"Telegram error: {r.status_code} - {r.text}")
+            print(f"Telegram error: {r.status_code}")
     except Exception as e:
         print(f"Telegram error: {e}")
 
@@ -185,8 +189,7 @@ Summary: {analysis.get('summary', 'N/A')}
 
 Category: {analysis.get('category', 'N/A')}
 
-Draft Reply:
-{analysis.get('draft_reply', 'N/A')}"""
+Draft Reply: {analysis.get('draft_reply', 'N/A')}"""
                 
                 send_telegram(msg)
                 save_processed_uid(e['uid'])
