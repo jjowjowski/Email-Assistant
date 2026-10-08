@@ -16,7 +16,10 @@ PROCESSED_FILE = "processed_uids.txt"
 def get_calendar_service():
     try:
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-        creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/calendar.readonly'])
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, 
+            scopes=['https://www.googleapis.com/auth/calendar.readonly']
+        )
         return build('calendar', 'v3', credentials=creds)
     except Exception as e:
         print(f"Calendar service error: {e}")
@@ -44,12 +47,12 @@ def check_calendar_availability():
         if events:
             next_event = events[0]
             start_time = next_event['start'].get('dateTime', next_event['start'].get('date'))
-            return f"Calendar: Next meeting is {next_event['summary']} at {start_time}"
+            return f"Next meeting: {next_event['summary']} at {start_time}"
         else:
-            return "Calendar: You're free tomorrow"
+            return "No meetings scheduled for next 24 hours"
     except Exception as e:
         print(f"Calendar check error: {e}")
-        return "Calendar: unable to check"
+        return "Calendar unavailable"
 
 def load_processed_uids():
     if os.path.exists(PROCESSED_FILE):
@@ -60,6 +63,18 @@ def load_processed_uids():
 def save_processed_uid(uid):
     with open(PROCESSED_FILE, 'a') as f:
         f.write(f"{uid}\n")
+
+def mark_email_unread(email_id):
+    try:
+        m = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        m.login(EMAIL, PWD)
+        m.select("INBOX")
+        m.store(email_id, '-FLAGS', '\\Seen')
+        m.close()
+        m.logout()
+        print(f"Marked email {email_id} as unread")
+    except Exception as e:
+        print(f"Error marking unread: {e}")
 
 def get_email_body(msg):
     body = ""
@@ -115,9 +130,9 @@ Body: {body}
 Calendar status: {calendar_status}
 
 {{
-    "summary": "1-2 sentence summary of what the email is asking/saying",
-    "category": "one of: Urgent, Needs Reply, FYI, Follow-up, Course/Admin",
-    "draft_reply": "A brief professional draft reply (2-3 sentences). If meeting requested, reference your calendar availability. If no reply needed, say 'No reply needed.'"
+    "summary": "1-2 sentence summary",
+    "category": "Urgent, Needs Reply, FYI, Follow-up, or Course/Admin",
+    "draft_reply": "Brief professional reply (2-3 sentences). If meeting requested, reference calendar. If no reply needed, say 'No reply needed.'"
 }}"""
     
     try:
@@ -144,13 +159,13 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-print("Personal Email Assistant started with Calendar access")
+print("Email Assistant started")
 
 while True:
     try:
         emails = get_new_emails()
         if emails:
-            print(f"Found {len(emails)} new emails")
+            print(f"Found {len(emails)} emails")
             for e in emails:
                 print(f"Processing: {e['subject']}")
                 analysis = analyze_email(e['from'], e['subject'], e['body'])
@@ -168,6 +183,7 @@ while True:
                 
                 send_telegram(msg)
                 save_processed_uid(e['uid'])
+                mark_email_unread(e['uid'])
                 time.sleep(1)
         else:
             print(f"No new emails at {datetime.now()}")
