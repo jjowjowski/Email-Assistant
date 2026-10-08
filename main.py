@@ -1,6 +1,6 @@
 import os, json, time, imaplib, email, requests
 from email.header import decode_header
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -31,7 +31,7 @@ def check_calendar_availability():
         if not service:
             return "Calendar unavailable"
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         end = now + timedelta(days=1)
         
         events_result = service.events().list(
@@ -119,34 +119,38 @@ def get_new_emails():
         return []
 
 def analyze_email(fr, subj, body):
-    calendar_status = check_calendar_availability()
+    try:
+        calendar_status = check_calendar_availability()
+    except:
+        calendar_status = "Calendar unavailable"
     
-    prompt = f"""Analyze this email and respond ONLY with valid JSON (no other text):
+    prompt = f"""Respond ONLY with this JSON format, no other text:
+{{"summary": "1-2 sentence summary", "category": "Urgent/Needs Reply/FYI/Follow-up/Course/Admin", "draft_reply": "2-3 sentence reply or 'No reply needed'"}}
 
-From: {fr}
+Email from: {fr}
 Subject: {subj}
 Body: {body}
-
-Calendar status: {calendar_status}
-
-{{
-    "summary": "1-2 sentence summary",
-    "category": "Urgent, Needs Reply, FYI, Follow-up, or Course/Admin",
-    "draft_reply": "Brief professional reply (2-3 sentences). If meeting requested, reference calendar. If no reply needed, say 'No reply needed.'"
-}}"""
+Calendar: {calendar_status}"""
     
     try:
         r = requests.post("https://api.anthropic.com/v1/messages", 
             headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}, 
-            json={"model": "claude-haiku-5-5", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-haiku-5-5", "max_tokens": 200, "messages": [{"role": "user", "content": prompt}]},
             timeout=30)
         
         if r.status_code == 200:
-            text = r.json()["content"][0]["text"].strip()
-            if text.startswith("```"):
-                text = text.split("```")[1].lstrip("json").strip()
-            return json.loads(text)
-        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "Error analyzing"}
+            try:
+                response_data = r.json()
+                if "content" in response_data and len(response_data["content"]) > 0:
+                    text = response_data["content"][0].get("text", "").strip()
+                    if text:
+                        if text.startswith("```"):
+                            text = text.split("```")[1].lstrip("json").strip()
+                        return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+        
+        return {"summary": "Could not analyze", "category": "Needs Reply", "draft_reply": "Please review manually"}
     except Exception as e:
         print(f"Claude error: {e}")
         return {"summary": "Error", "category": "Needs Reply", "draft_reply": "Error analyzing"}
