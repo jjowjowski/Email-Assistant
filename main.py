@@ -3,6 +3,7 @@ from email.header import decode_header
 from datetime import datetime, timedelta, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+import pytz
 
 KEY = os.getenv("ANTHROPIC_KEY")
 EMAIL = os.getenv("GMAIL_ADDRESS")
@@ -12,6 +13,7 @@ TG_ID = os.getenv("TELEGRAM_CHAT_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT")
 
 PROCESSED_FILE = "processed_uids.txt"
+DAILY_DIGEST_FILE = "daily_digest.json"
 
 def get_calendar_service():
     try:
@@ -63,6 +65,16 @@ def load_processed_uids():
 def save_processed_uid(uid):
     with open(PROCESSED_FILE, 'a') as f:
         f.write(f"{uid}\n")
+
+def load_daily_digest():
+    if os.path.exists(DAILY_DIGEST_FILE):
+        with open(DAILY_DIGEST_FILE, 'r') as f:
+            return json.load(f)
+    return {"emails": [], "last_sent": None}
+
+def save_daily_digest(digest):
+    with open(DAILY_DIGEST_FILE, 'w') as f:
+        json.dump(digest, f)
 
 def mark_email_unread(email_id):
     try:
@@ -125,7 +137,7 @@ def analyze_email(fr, subj, body):
     
     prompt = f"""Return valid JSON only. No other text.
 
-{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "Brief reply or No reply needed"}}
+{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "Brief reply or No reply needed", "is_urgent": true/false}}
 
 Analyze:
 From: {fr}
@@ -150,12 +162,12 @@ Calendar: {calendar_status}"""
                 try:
                     return json.loads(text)
                 except:
-                    return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A"}
+                    return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A", "is_urgent": False}
         
-        return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A"}
+        return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A", "is_urgent": False}
     except Exception as e:
         print(f"ERROR: {e}")
-        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "N/A"}
+        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "N/A", "is_urgent": False}
 
 def send_telegram(msg):
     try:
@@ -168,18 +180,43 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram error: {e}")
 
+def is_8am_nzdt():
+    nz_tz = pytz.timezone('Pacific/Auckland')
+    nz_now = datetime.now(nz_tz)
+    return nz_now.hour == 8 and nz_now.minute < 1
+
+def send_daily_briefing(digest):
+    if not digest["emails"]:
+        return
+    
+    msg = "📧 DAILY EMAIL BRIEFING\n\n"
+    for idx, e in enumerate(digest["emails"], 1):
+        msg += f"{idx}. From: {e['from']}\n"
+        msg += f"   Subject: {e['subject']}\n"
+        msg += f"   Summary: {e['analysis']['summary']}\n"
+        msg += f"   Category: {e['analysis']['category']}\n\n"
+    
+    send_telegram(msg)
+    digest["last_sent"] = datetime.now().isoformat()
+    digest["emails"] = []
+    save_daily_digest(digest)
+    print("Daily briefing sent")
+
 print("Email Assistant started")
 
 while True:
     try:
         emails = get_new_emails()
+        digest = load_daily_digest()
+        
         if emails:
             print(f"Found {len(emails)} emails")
             for e in emails:
                 print(f"Processing: {e['subject']}")
                 analysis = analyze_email(e['from'], e['subject'], e['body'])
                 
-                msg = f"""NEW EMAIL
+                if analysis.get("is_urgent") or analysis.get("category") == "Urgent":
+                    msg = f"""🚨 URGENT EMAIL
 From: {e['from']}
 Subject: {e['subject']}
 
@@ -188,16 +225,27 @@ Summary: {analysis.get('summary', 'N/A')}
 Category: {analysis.get('category', 'N/A')}
 
 Draft Reply: {analysis.get('draft_reply', 'N/A')}"""
+                    send_telegram(msg)
+                else:
+                    digest["emails"].append({
+                        "from": e['from'],
+                        "subject": e['subject'],
+                        "analysis": analysis
+                    })
                 
-                send_telegram(msg)
                 save_processed_uid(e['uid'])
                 mark_email_unread(e['uid'])
                 time.sleep(1)
+            
+            save_daily_digest(digest)
+        
+        if is_8am_nzdt():
+            send_daily_briefing(digest)
+            time.sleep(60)
         else:
             print(f"No new emails at {datetime.now()}")
-        
-        print("Waiting 20 minutes...")
-        time.sleep(1200)
+            time.sleep(1200)
+    
     except KeyboardInterrupt:
         print("Stopped")
         break
