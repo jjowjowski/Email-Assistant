@@ -137,12 +137,14 @@ def analyze_email(fr, subj, body):
     
     prompt = f"""Return valid JSON only. No other text.
 
-{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "Brief reply or No reply needed", "is_urgent": true/false}}
+{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "Brief reply or No reply needed"}}
 
-Analyze:
-From: {fr}
+Analyze this email:
 Subject: {subj}
+From: {fr}
 Body: {body}
+
+If subject contains URGENT, ASAP, EMERGENCY, CRITICAL, IMMEDIATE or HELP NOW - categorize as Urgent.
 Calendar: {calendar_status}"""
     
     try:
@@ -162,12 +164,16 @@ Calendar: {calendar_status}"""
                 try:
                     return json.loads(text)
                 except:
-                    return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A", "is_urgent": False}
+                    return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A"}
         
-        return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A", "is_urgent": False}
+        return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A"}
     except Exception as e:
         print(f"ERROR: {e}")
-        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "N/A", "is_urgent": False}
+        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "N/A"}
+
+def is_urgent(subj, category):
+    urgent_keywords = ["urgent", "asap", "emergency", "critical", "immediate", "help now", "need help"]
+    return any(keyword in subj.lower() for keyword in urgent_keywords) or category == "Urgent"
 
 def send_telegram(msg):
     try:
@@ -215,7 +221,7 @@ while True:
                 print(f"Processing: {e['subject']}")
                 analysis = analyze_email(e['from'], e['subject'], e['body'])
                 
-                if analysis.get("is_urgent") or analysis.get("category") == "Urgent":
+                if is_urgent(e['subject'], analysis.get("category")):
                     msg = f"""🚨 URGENT EMAIL
 From: {e['from']}
 Subject: {e['subject']}
@@ -226,6 +232,7 @@ Category: {analysis.get('category', 'N/A')}
 
 Draft Reply: {analysis.get('draft_reply', 'N/A')}"""
                     send_telegram(msg)
+                    print("Sent as URGENT")
                 else:
                     digest["emails"].append({
                         "from": e['from'],
