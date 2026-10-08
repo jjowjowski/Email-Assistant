@@ -7,8 +7,6 @@ EMAIL = os.getenv("GMAIL_ADDRESS")
 PWD = os.getenv("GMAIL_PASSWORD")
 TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_ID = os.getenv("TELEGRAM_CHAT_ID")
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 
 PROCESSED_FILE = "processed_uids.txt"
 
@@ -21,6 +19,21 @@ def load_processed_uids():
 def save_processed_uid(uid):
     with open(PROCESSED_FILE, 'a') as f:
         f.write(f"{uid}\n")
+
+def get_email_body(msg):
+    body = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    body = payload.decode(errors='ignore')[:500]
+                    break
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            body = payload.decode(errors='ignore')[:500]
+    return body
 
 def get_new_emails():
     try:
@@ -39,7 +52,8 @@ def get_new_emails():
                 msg = email.message_from_bytes(d[0][1])
                 subj = msg.get("Subject", "?")
                 fr = msg.get("From", "?")
-                new_emails.append({'uid': eid_str, 'from': fr, 'subject': subj})
+                body = get_email_body(msg)
+                new_emails.append({'uid': eid_str, 'from': fr, 'subject': subj, 'body': body})
         
         m.close()
         m.logout()
@@ -48,9 +62,9 @@ def get_new_emails():
         print(f"Email error: {e}")
         return []
 
-def summarize_with_claude(fr, subj):
+def summarize_with_claude(fr, subj, body):
     try:
-        prompt = f"Summarize this email in 1 sentence. From: {fr}, Subject: {subj}"
+        prompt = f"Summarize this email in 1 sentence. From: {fr}, Subject: {subj}, Body: {body}"
         r = requests.post("https://api.anthropic.com/v1/messages", 
             headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}, 
             json={"model": "claude-haiku-5-5", "max_tokens": 100, "messages": [{"role": "user", "content": prompt}]},
@@ -79,7 +93,7 @@ while True:
             print(f"Found {len(emails)} emails")
             for e in emails:
                 print(f"Processing: {e['subject']}")
-                summary = summarize_with_claude(e['from'], e['subject'])
+                summary = summarize_with_claude(e['from'], e['subject'], e['body'])
                 msg = f"<b>Email from {e['from']}</b>\n<b>Subject:</b> {e['subject']}\n<b>Summary:</b> {summary}"
                 send_telegram(msg)
                 save_processed_uid(e['uid'])
