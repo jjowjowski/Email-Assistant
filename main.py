@@ -17,6 +17,9 @@ FORCE_BRIEFING = os.getenv("FORCE_BRIEFING") == "1"
 
 MY_NAME = "Jett Groshinski"
 MY_FIRST = MY_NAME.split()[0]
+ASSISTANT_NAME = "Jennifer Clarke"
+ASSISTANT_FIRST = ASSISTANT_NAME.split()[0]
+ASSISTANT_TITLE = "Executive Assistant"
 DRAFTS_FOLDER = '"[Gmail]/Drafts"'
 SENT_FOLDER = '"[Gmail]/Sent Mail"'
 SKIP_SENDERS = ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications", "notify", "mailer-daemon", "railway.app"]
@@ -203,13 +206,19 @@ def clean_analysis(data):
 
 def analyze_email(fr, subj, body, tone):
     calendar_status = check_calendar_availability()
+    formal = ("Write in a formal, professional register: open with 'Dear [first name],' (or 'Dear Sir/Madam,' if the name is unknown), "
+              "use complete, courteous sentences, no contractions, no slang, no exclamation marks, and no emojis. "
+              "Keep it concise and clear.")
     if tone == "secretary":
-        style = (f"Write draft_body as {MY_NAME}'s personal assistant, in the third person, e.g. "
-                 f"'Hi Sam, thank you for your email. {MY_FIRST} would be glad to...'. "
-                 f"Sign off 'Kind regards,' then 'Assistant to {MY_NAME}'.")
+        style = (f"Write draft_body as {ASSISTANT_NAME}, {ASSISTANT_TITLE} to {MY_NAME}, writing on his behalf in the third person about {MY_FIRST}. "
+                 f"{formal} "
+                 f"Briefly introduce yourself in the first line, e.g. 'I am writing on behalf of {MY_NAME}.' "
+                 f"Then reply, e.g. 'Thank you for your email. {MY_FIRST} would be pleased to...'. "
+                 f"Always use the name {ASSISTANT_NAME} and never any other assistant name. "
+                 f"Sign off with 'Kind regards,' then '{ASSISTANT_NAME}' on one line and '{ASSISTANT_TITLE} to {MY_NAME}' on the next.")
     else:
-        style = (f"Write draft_body in the first person as {MY_FIRST}, warm, natural and concise. "
-                 f"Sign off 'Kind regards,' then '{MY_FIRST}'.")
+        style = (f"Write draft_body in the first person as {MY_FIRST}. {formal} "
+                 f"Sign off with 'Kind regards,' then '{MY_FIRST}'.")
     prompt = f"""Analyze this email and call the record_analysis tool with your result.
 
 {style}
@@ -249,7 +258,6 @@ Calendar: {calendar_status}"""
                 if b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
                     return clean_analysis(b["input"])
 
-            # Fallback: try to read any text the model returned
             text = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             try:
                 return clean_analysis(parse_json_loose(text))
@@ -308,7 +316,7 @@ def briefing_due(digest):
 def draft_note(draft_saved, tone):
     if not draft_saved:
         return ""
-    voice = "assistant voice, new contact" if tone == "secretary" else "your voice, you've emailed them before"
+    voice = f"written by {ASSISTANT_FIRST}, new contact" if tone == "secretary" else "your voice, you've emailed them before"
     return f"✍️ Draft waiting in Gmail Drafts ({voice})"
 
 def send_daily_briefing(digest):
@@ -331,7 +339,7 @@ def send_daily_briefing(digest):
     save_daily_digest(digest)
 
 print("Email Assistant started")
-send_telegram("✅ Email assistant is online and checking your inbox every 20 minutes.")
+send_telegram(f"✅ Email assistant is online. {ASSISTANT_FIRST} is checking your inbox every 20 minutes.")
 
 first_loop = True
 
