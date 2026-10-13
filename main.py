@@ -212,8 +212,8 @@ def analyze_email(fr, subj, body, tone):
     if tone == "secretary":
         style = (f"Write draft_body as {ASSISTANT_NAME}, {ASSISTANT_TITLE} to {MY_NAME}, writing on his behalf in the third person about {MY_FIRST}. "
                  f"{formal} "
-                 f"Briefly introduce yourself in the first line, e.g. 'I am writing on behalf of {MY_NAME}.' "
-                 f"Then reply, e.g. 'Thank you for your email. {MY_FIRST} would be pleased to...'. "
+                 f"Do NOT introduce yourself and do NOT write phrases like 'I am writing on behalf of' anywhere in the body, because the sign-off already shows who you are. "
+                 f"After the greeting, go straight into the reply, e.g. 'Thank you for your email. {MY_FIRST} would be pleased to...'. "
                  f"Always use the name {ASSISTANT_NAME} and never any other assistant name. "
                  f"Sign off with 'Kind regards,' then '{ASSISTANT_NAME}' on one line and '{ASSISTANT_TITLE} to {MY_NAME}' on the next.")
     else:
