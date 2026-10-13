@@ -19,6 +19,7 @@ MY_NAME = "Jett Groshinski"
 MY_FIRST = MY_NAME.split()[0]
 ASSISTANT_NAME = "Jennifer Clarke"
 ASSISTANT_FIRST = ASSISTANT_NAME.split()[0]
+ASSISTANT_TITLE = "Assistant"
 DRAFTS_FOLDER = '"[Gmail]/Drafts"'
 SENT_FOLDER = '"[Gmail]/Sent Mail"'
 SKIP_SENDERS = ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications", "notify", "mailer-daemon", "railway.app"]
@@ -209,13 +210,12 @@ def analyze_email(fr, subj, body, tone):
               "use complete, courteous sentences, no contractions, no slang, no exclamation marks, and no emojis. "
               "Keep it concise and clear.")
     if tone == "secretary":
-        style = (f"Write draft_body as {ASSISTANT_NAME}, writing on behalf of {MY_NAME}, in the third person about {MY_FIRST}. "
+        style = (f"Write draft_body as {ASSISTANT_NAME}, {ASSISTANT_TITLE} to {MY_NAME}, writing on his behalf in the third person about {MY_FIRST}. "
                  f"{formal} "
                  f"Briefly introduce yourself in the first line, e.g. 'I am writing on behalf of {MY_NAME}.' "
                  f"Then reply, e.g. 'Thank you for your email. {MY_FIRST} would be pleased to...'. "
-                 f"Never use the words 'assistant' or 'secretary' or mention any job title anywhere in the draft. "
-                 f"Always use the name {ASSISTANT_NAME} and never any other name for the writer. "
-                 f"Sign off with 'Kind regards,' then '{ASSISTANT_NAME}' on its own line, and nothing after it.")
+                 f"Always use the name {ASSISTANT_NAME} and never any other assistant name. "
+                 f"Sign off with 'Kind regards,' then '{ASSISTANT_NAME}' on one line and '{ASSISTANT_TITLE} to {MY_NAME}' on the next.")
     else:
         style = (f"Write draft_body in the first person as {MY_FIRST}. {formal} "
                  f"Sign off with 'Kind regards,' then '{MY_FIRST}'.")
