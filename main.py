@@ -302,4 +302,93 @@ def send_telegram(msg):
     chunks = [msg[i:i + 3900] for i in range(0, len(msg), 3900)] or [msg]
     for chunk in chunks:
         try:
-            r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage
+            r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={"chat_id": TG_ID, "text": chunk}, timeout=10)
+            print("Telegram sent" if r.status_code == 200 else f"Telegram error: {r.status_code} {r.text[:200]}")
+        except Exception as ex:
+            print(f"Telegram error: {ex}")
+        time.sleep(1)
+
+def briefing_due(digest):
+    nz_now = datetime.now(NZ_TZ)
+    return nz_now.hour >= 8 and digest.get("last_sent") != nz_now.strftime("%Y-%m-%d")
+
+def draft_note(draft_saved, tone):
+    if not draft_saved:
+        return ""
+    voice = f"written by {ASSISTANT_FIRST}, new contact" if tone == "secretary" else "your voice, you've emailed them before"
+    return f"✍️ Draft waiting in Gmail Drafts ({voice})"
+
+def send_daily_briefing(digest):
+    nz_today = datetime.now(NZ_TZ).strftime("%Y-%m-%d")
+    if digest["emails"]:
+        msg = "📧 DAILY EMAIL BRIEFING\n\n"
+        for idx, e in enumerate(digest["emails"], 1):
+            msg += f"{idx}. From: {e['from']}\n   Subject: {e['subject']}\n"
+            msg += f"   Summary: {e['analysis'].get('summary', 'N/A')}\n"
+            msg += f"   Category: {e['analysis'].get('category', 'N/A')}\n"
+            note = draft_note(e.get("draft_saved"), e.get("tone"))
+            if note:
+                msg += f"   {note}\n"
+            msg += "\n"
+    else:
+        msg = "📧 DAILY EMAIL BRIEFING\n\nNo new non-urgent emails since the last briefing."
+    send_telegram(msg)
+    digest["emails"] = []
+    digest["last_sent"] = nz_today
+    save_daily_digest(digest)
+
+print("Email Assistant started")
+send_telegram(f"✅ Email assistant is online. {ASSISTANT_FIRST} is checking your inbox every 20 minutes.")
+
+first_loop = True
+
+while True:
+    try:
+        emails = get_new_emails()
+        digest = load_daily_digest()
+
+        if emails:
+            print(f"Found {len(emails)} emails")
+            for e in emails:
+                print(f"Processing: {e['subject']}")
+                sender_addr = parseaddr(e['reply_to'])[1]
+                tone = "personal" if emailed_before(sender_addr) else "secretary"
+                print(f"Tone: {tone} (sender: {sender_addr})")
+
+                analysis = analyze_email(e['from'], e['subject'], e['body'], tone)
+                category = analysis.get("category", "Unanalyzed")
+
+                draft_saved = False
+                draft_body = (analysis.get("draft_body") or "").strip()
+                if analysis.get("needs_reply") and draft_body:
+                    draft_saved = save_draft(e, draft_body)
+
+                apply_label(e['uid'], LABELS.get(category, "Unanalyzed"))
+
+                if is_urgent(e['subject'], category):
+                    note = draft_note(draft_saved, tone)
+                    note = f"\n{note}" if note else ""
+                    send_telegram(f"🚨 URGENT EMAIL\nFrom: {e['from']}\nSubject: {e['subject']}\n\nSummary: {analysis.get('summary', 'N/A')}{note}")
+                else:
+                    digest["emails"].append({"from": e['from'], "subject": e['subject'],
+                                             "analysis": analysis, "draft_saved": draft_saved, "tone": tone})
+
+                save_processed(f"u{e['uid']}")
+                time.sleep(1)
+            save_daily_digest(digest)
+
+        if (FORCE_BRIEFING and first_loop) or briefing_due(digest):
+            send_daily_briefing(digest)
+        else:
+            print(f"Checked at {datetime.now(NZ_TZ)}")
+
+        first_loop = False
+        time.sleep(1200)
+
+    except KeyboardInterrupt:
+        print("Stopped")
+        break
+    except Exception as ex:
+        print(f"Error: {ex}")
+        time.sleep(60)
