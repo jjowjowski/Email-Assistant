@@ -1,4 +1,7 @@
 import os, json, time, imaplib, email, requests
+from email.message import EmailMessage
+from email.utils import parseaddr
+from email.header import decode_header
 from datetime import datetime, timedelta, timezone
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -12,6 +15,11 @@ TG_ID = os.getenv("TELEGRAM_CHAT_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT")
 FORCE_BRIEFING = os.getenv("FORCE_BRIEFING") == "1"
 
+MY_NAME = "Jett Groshinski"
+MY_FIRST = MY_NAME.split()[0]
+DRAFTS_FOLDER = '"[Gmail]/Drafts"'
+SKIP_SENDERS = ["noreply", "no-reply", "donotreply", "do-not-reply", "notifications", "notify", "mailer-daemon", "railway.app"]
+
 PROCESSED_FILE = "processed_uids.txt"
 DAILY_DIGEST_FILE = "daily_digest.json"
 NZ_TZ = pytz.timezone('Pacific/Auckland')
@@ -20,9 +28,7 @@ def get_calendar_service():
     try:
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict,
-            scopes=['https://www.googleapis.com/auth/calendar.readonly']
-        )
+            creds_dict, scopes=['https://www.googleapis.com/auth/calendar.readonly'])
         return build('calendar', 'v3', credentials=creds)
     except Exception as e:
         print(f"Calendar service error: {e}")
@@ -34,20 +40,17 @@ def check_calendar_availability():
         if not service:
             return "Calendar unavailable"
         now = datetime.now(timezone.utc)
-        end = now + timedelta(days=1)
-        events_result = service.events().list(
-            calendarId='primary',
-            timeMin=now.isoformat(),
-            timeMax=end.isoformat(),
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        events = events_result.get('items', [])
-        if events:
-            next_event = events[0]
-            start_time = next_event['start'].get('dateTime', next_event['start'].get('date'))
-            return f"Next meeting: {next_event.get('summary', 'Busy')} at {start_time}"
-        return "No meetings scheduled"
+        end = now + timedelta(days=3)
+        events = service.events().list(
+            calendarId='primary', timeMin=now.isoformat(), timeMax=end.isoformat(),
+            singleEvents=True, orderBy='startTime').execute().get('items', [])
+        if not events:
+            return "No meetings in the next 3 days"
+        lines = []
+        for ev in events[:8]:
+            start = ev['start'].get('dateTime', ev['start'].get('date'))
+            lines.append(f"{ev.get('summary', 'Busy')} at {start}")
+        return "Upcoming: " + "; ".join(lines)
     except Exception as e:
         print(f"Calendar check error: {e}")
         return "Calendar unavailable"
@@ -90,24 +93,19 @@ def get_email_body(msg):
             if part.get_content_type() == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    body = payload.decode(errors='ignore')[:1000]
+                    body = payload.decode(errors='ignore')[:1500]
                     break
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            body = payload.decode(errors='ignore')[:1000]
+            body = payload.decode(errors='ignore')[:1500]
     return body
 
 def decode_subject(raw):
     try:
-        from email.header import decode_header
-        parts = decode_header(raw)
         out = ""
-        for text, enc in parts:
-            if isinstance(text, bytes):
-                out += text.decode(enc or "utf-8", errors="ignore")
-            else:
-                out += text
+        for text, enc in decode_header(raw):
+            out += text.decode(enc or "utf-8", errors="ignore") if isinstance(text, bytes) else text
         return out
     except Exception:
         return raw
@@ -125,10 +123,15 @@ def get_new_emails():
             if eid_str not in processed:
                 _, d = m.fetch(eid, "(RFC822)")
                 msg = email.message_from_bytes(d[0][1])
-                subj = decode_subject(msg.get("Subject", "(no subject)"))
-                fr = msg.get("From", "unknown")
-                body = get_email_body(msg)
-                new_emails.append({'uid': eid_str, 'from': fr, 'subject': subj, 'body': body})
+                new_emails.append({
+                    'uid': eid_str,
+                    'from': msg.get("From", "unknown"),
+                    'reply_to': msg.get("Reply-To") or msg.get("From", ""),
+                    'subject': decode_subject(msg.get("Subject", "(no subject)")),
+                    'message_id': msg.get("Message-ID", ""),
+                    'references': msg.get("References", ""),
+                    'body': get_email_body(msg),
+                })
         m.close()
         m.logout()
         return new_emails
@@ -140,20 +143,27 @@ def analyze_email(fr, subj, body):
     calendar_status = check_calendar_availability()
     prompt = f"""Return valid JSON only. No other text.
 
-{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "draft_reply": "Brief reply or No reply needed"}}
+{{"summary": "1-2 sentence summary", "category": "Urgent|Needs Reply|FYI|Follow-up|Course/Admin", "needs_reply": true or false, "tone": "personal or secretary", "draft_body": "full email reply text, or empty string if no reply is needed"}}
 
-Analyze this email:
+STEP 1 - Choose the tone based on who is writing and why.
+Use "secretary" (reply written by {MY_NAME}'s personal assistant, third person, e.g. "Hi Sam, thank you for your email. {MY_FIRST} would be glad to...", signed "Assistant to {MY_NAME}") for: recruiters and employers, lecturers and university administration, banks and official bodies, business enquiries, and anyone writing formally or contacting {MY_FIRST} for the first time.
+Use "personal" (first person as {MY_FIRST}, warm and natural, signed "Cheers," or "Kind regards," then "{MY_FIRST}") for: friends, family, classmates, and anyone writing casually or who clearly knows {MY_FIRST} well.
+If unsure, choose "personal".
+
+STEP 2 - Write draft_body in the chosen tone. Keep it concise.
+If a meeting or time is proposed, use the calendar below to accept, decline or suggest alternatives. Never invent facts, commitments or attachments. If you lack information, say you will follow up.
+If subject or body contains URGENT, ASAP, EMERGENCY, CRITICAL, IMMEDIATE or HELP NOW, categorize as Urgent.
+Newsletters, receipts, automated notifications and marketing never need a reply.
+
 Subject: {subj}
 From: {fr}
 Body: {body}
-
-If subject or body contains URGENT, ASAP, EMERGENCY, CRITICAL, IMMEDIATE or HELP NOW - categorize as Urgent.
 Calendar: {calendar_status}"""
     try:
         r = requests.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key": KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-haiku-5-5", "max_tokens": 300, "messages": [{"role": "user", "content": prompt}]},
-            timeout=30)
+            json={"model": "claude-haiku-5-5", "max_tokens": 700, "messages": [{"role": "user", "content": prompt}]},
+            timeout=45)
         if r.status_code == 200:
             blocks = r.json().get("content", [])
             if blocks:
@@ -163,13 +173,36 @@ Calendar: {calendar_status}"""
                 try:
                     return json.loads(text)
                 except Exception:
-                    return {"summary": text[:100], "category": "Needs Reply", "draft_reply": "N/A"}
+                    return {"summary": text[:100], "category": "Needs Reply", "needs_reply": False, "tone": "personal", "draft_body": ""}
         else:
             print(f"Claude API error {r.status_code}: {r.text[:200]}")
-        return {"summary": "API error", "category": "Needs Reply", "draft_reply": "N/A"}
     except Exception as e:
         print(f"Claude error: {e}")
-        return {"summary": "Error", "category": "Needs Reply", "draft_reply": "N/A"}
+    return {"summary": "Could not analyze", "category": "Needs Reply", "needs_reply": False, "tone": "personal", "draft_body": ""}
+
+def save_draft(e, body_text):
+    try:
+        to_addr = parseaddr(e['reply_to'])[1]
+        if not to_addr or any(s in to_addr.lower() for s in SKIP_SENDERS):
+            return False
+        msg = EmailMessage()
+        msg["From"] = EMAIL
+        msg["To"] = to_addr
+        subj = e['subject']
+        msg["Subject"] = subj if subj.lower().startswith("re:") else f"Re: {subj}"
+        if e['message_id']:
+            msg["In-Reply-To"] = e['message_id']
+            msg["References"] = (e['references'] + " " + e['message_id']).strip()
+        msg.set_content(body_text)
+        m = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        m.login(EMAIL, PWD)
+        status, _ = m.append(DRAFTS_FOLDER, '\\Draft', imaplib.Time2Internaldate(time.time()), msg.as_bytes())
+        m.logout()
+        print(f"Draft saved ({status}) for: {subj}")
+        return status == "OK"
+    except Exception as ex:
+        print(f"Draft error: {ex}")
+        return False
 
 def is_urgent(subj, category):
     keywords = ["urgent", "asap", "emergency", "critical", "immediate", "help now", "need help"]
@@ -182,29 +215,35 @@ def send_telegram(msg):
             r = requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
                 json={"chat_id": TG_ID, "text": chunk}, timeout=10)
             print("Telegram sent" if r.status_code == 200 else f"Telegram error: {r.status_code} {r.text[:200]}")
-        except Exception as e:
-            print(f"Telegram error: {e}")
+        except Exception as ex:
+            print(f"Telegram error: {ex}")
         time.sleep(1)
 
 def briefing_due(digest):
     nz_now = datetime.now(NZ_TZ)
-    today = nz_now.strftime("%Y-%m-%d")
-    return nz_now.hour >= 8 and digest.get("last_sent") != today
+    return nz_now.hour >= 8 and digest.get("last_sent") != nz_now.strftime("%Y-%m-%d")
+
+def draft_note(draft_saved, tone):
+    if not draft_saved:
+        return ""
+    voice = "assistant voice" if tone == "secretary" else "your voice"
+    return f"✍️ Draft reply waiting in Gmail Drafts ({voice})"
 
 def send_daily_briefing(digest):
     nz_today = datetime.now(NZ_TZ).strftime("%Y-%m-%d")
     if digest["emails"]:
         msg = "📧 DAILY EMAIL BRIEFING\n\n"
         for idx, e in enumerate(digest["emails"], 1):
-            msg += f"{idx}. From: {e['from']}\n"
-            msg += f"   Subject: {e['subject']}\n"
+            msg += f"{idx}. From: {e['from']}\n   Subject: {e['subject']}\n"
             msg += f"   Summary: {e['analysis'].get('summary', 'N/A')}\n"
             msg += f"   Category: {e['analysis'].get('category', 'N/A')}\n"
-            msg += f"   Draft: {e['analysis'].get('draft_reply', 'N/A')}\n\n"
+            note = draft_note(e.get("draft_saved"), e['analysis'].get("tone"))
+            if note:
+                msg += f"   {note}\n"
+            msg += "\n"
     else:
         msg = "📧 DAILY EMAIL BRIEFING\n\nNo new non-urgent emails since the last briefing."
     send_telegram(msg)
-    print("Daily briefing sent")
     digest["emails"] = []
     digest["last_sent"] = nz_today
     save_daily_digest(digest)
@@ -224,17 +263,21 @@ while True:
             for e in emails:
                 print(f"Processing: {e['subject']}")
                 analysis = analyze_email(e['from'], e['subject'], e['body'])
+                tone = analysis.get("tone", "personal")
+                print(f"Tone chosen: {tone}")
+
+                draft_saved = False
+                draft_body = (analysis.get("draft_body") or "").strip()
+                if analysis.get("needs_reply") and draft_body:
+                    draft_saved = save_draft(e, draft_body)
 
                 if is_urgent(e['subject'], analysis.get("category")):
-                    send_telegram(f"""🚨 URGENT EMAIL
-From: {e['from']}
-Subject: {e['subject']}
-
-Summary: {analysis.get('summary', 'N/A')}
-
-Draft Reply: {analysis.get('draft_reply', 'N/A')}""")
+                    note = draft_note(draft_saved, tone)
+                    note = f"\n{note}" if note else ""
+                    send_telegram(f"🚨 URGENT EMAIL\nFrom: {e['from']}\nSubject: {e['subject']}\n\nSummary: {analysis.get('summary', 'N/A')}{note}")
                 else:
-                    digest["emails"].append({"from": e['from'], "subject": e['subject'], "analysis": analysis})
+                    digest["emails"].append({"from": e['from'], "subject": e['subject'],
+                                             "analysis": analysis, "draft_saved": draft_saved})
 
                 save_processed_uid(e['uid'])
                 mark_email_unread(e['uid'])
@@ -252,6 +295,6 @@ Draft Reply: {analysis.get('draft_reply', 'N/A')}""")
     except KeyboardInterrupt:
         print("Stopped")
         break
-    except Exception as e:
-        print(f"Error: {e}")
+    except Exception as ex:
+        print(f"Error: {ex}")
         time.sleep(60)
