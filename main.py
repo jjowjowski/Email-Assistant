@@ -15,6 +15,11 @@ TG_ID = os.getenv("TELEGRAM_CHAT_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT")
 FORCE_BRIEFING = os.getenv("FORCE_BRIEFING") == "1"
 
+# Calendars to read. Defaults to your Gmail calendar. To add more, set a Railway variable
+# CALENDAR_IDS to a comma-separated list, e.g. "jett.groshinski@gmail.com,abc123@group.calendar.google.com"
+CALENDAR_IDS = [c.strip() for c in os.getenv("CALENDAR_IDS", EMAIL or "").split(",") if c.strip()]
+CALENDAR_DAYS = 7
+
 MY_NAME = "Jett Groshinski"
 MY_FIRST = MY_NAME.split()[0]
 ASSISTANT_NAME = "Jennifer Clarke"
@@ -58,26 +63,44 @@ def get_calendar_service():
         print(f"Calendar service error: {e}")
         return None
 
+def format_event(ev):
+    summary = ev.get('summary', 'Busy')
+    start = ev['start'].get('dateTime')
+    end = ev['end'].get('dateTime')
+    if start and end:
+        s = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(NZ_TZ)
+        e = datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(NZ_TZ)
+        return s, f"{s.strftime('%a %d %b')} {s.strftime('%I:%M%p').lstrip('0').lower()}-{e.strftime('%I:%M%p').lstrip('0').lower()}: {summary}"
+    # all-day event
+    d = datetime.fromisoformat(ev['start'].get('date')).replace(tzinfo=NZ_TZ)
+    return d, f"{d.strftime('%a %d %b')} all day: {summary}"
+
 def check_calendar_availability():
-    try:
-        service = get_calendar_service()
-        if not service:
-            return "Calendar unavailable"
-        now = datetime.now(timezone.utc)
-        end = now + timedelta(days=3)
-        events = service.events().list(
-            calendarId='primary', timeMin=now.isoformat(), timeMax=end.isoformat(),
-            singleEvents=True, orderBy='startTime').execute().get('items', [])
-        if not events:
-            return "No meetings in the next 3 days"
-        lines = []
-        for ev in events[:8]:
-            start = ev['start'].get('dateTime', ev['start'].get('date'))
-            lines.append(f"{ev.get('summary', 'Busy')} at {start}")
-        return "Upcoming: " + "; ".join(lines)
-    except Exception as e:
-        print(f"Calendar check error: {e}")
-        return "Calendar unavailable"
+    service = get_calendar_service()
+    if not service:
+        return "CALENDAR UNAVAILABLE: do not state or assume whether Jett is free. Say the time will be confirmed."
+    now = datetime.now(timezone.utc)
+    end = now + timedelta(days=CALENDAR_DAYS)
+    entries = []
+    failed = False
+    for cal_id in CALENDAR_IDS:
+        try:
+            items = service.events().list(
+                calendarId=cal_id, timeMin=now.isoformat(), timeMax=end.isoformat(),
+                singleEvents=True, orderBy='startTime', maxResults=50).execute().get('items', [])
+            print(f"Calendar {cal_id}: {len(items)} events in next {CALENDAR_DAYS} days")
+            for ev in items:
+                entries.append(format_event(ev))
+        except Exception as e:
+            failed = True
+            print(f"Calendar check error for {cal_id}: {e}")
+    if failed and not entries:
+        return "CALENDAR UNAVAILABLE: do not state or assume whether Jett is free. Say the time will be confirmed."
+    entries.sort(key=lambda x: x[0])
+    if not entries:
+        return f"No events found in the next {CALENDAR_DAYS} days (NZ time)."
+    lines = [t for _, t in entries[:40]]
+    return f"Jett's commitments for the next {CALENDAR_DAYS} days (NZ time). He is busy during these times:\n" + "\n".join(lines)
 
 def load_processed():
     if os.path.exists(PROCESSED_FILE):
@@ -222,7 +245,7 @@ def analyze_email(fr, subj, body, tone):
     prompt = f"""Analyze this email and call the record_analysis tool with your result.
 
 {style}
-If a meeting or time is proposed, use the calendar below to accept, decline or suggest alternatives. Never invent facts, commitments or attachments. If you lack information, say you will follow up.
+If a meeting or time is proposed, check the calendar below: accept only if the time is clear of listed commitments, otherwise decline or suggest times that are clearly free. Only suggest specific times when the calendar was read successfully, and never claim Jett is free if the calendar says it is unavailable. Never invent facts, commitments or attachments. If you lack information, say you will follow up.
 If subject or body contains URGENT, ASAP, EMERGENCY, CRITICAL, IMMEDIATE or HELP NOW, categorize as Urgent.
 Newsletters, receipts, automated notifications and marketing never need a reply: set needs_reply to false and draft_body to an empty string.
 Set category to "Needs Reply" only when needs_reply is true.
@@ -339,6 +362,7 @@ def send_daily_briefing(digest):
     save_daily_digest(digest)
 
 print("Email Assistant started")
+print(f"Reading calendars: {CALENDAR_IDS}")
 send_telegram(f"✅ Email assistant is online. {ASSISTANT_FIRST} is checking your inbox every 20 minutes.")
 
 first_loop = True
